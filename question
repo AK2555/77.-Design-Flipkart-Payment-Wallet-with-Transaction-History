@@ -1,0 +1,105 @@
+77. Design Flipkart Payment Wallet with Transaction History
+
+Implement an in-memory Flipkart payment wallet system. The system should support loading money, sending money to other users, fetching wallet balance, and getting transaction history with sorting and filtering.
+Requirements
+Users need to register on Flipkart to use this wallet.
+The user can load money into his wallet via various sources (Credit Card, Debit Card, UPI etc).
+Minimum amount of load money should be greater than 0.
+Assumption - No need for Integration from sources, can be implemented just success acknowledged.
+When user loads money, current system timestamp (monotonically increasing) is passed along and that is what is used for sorting transactions.
+The user can send money to other users from their wallet.
+The minimum amount of transaction will be always greater the 0
+The user must have a sufficient balance in his wallet while doing the transaction.
+When user sends money, current system timestamp (monotonically increasing) is passed along and that is what is used for sorting transactions.
+The user can fetch their wallet balance at any point of time, this should consider both credit & debit type of transactions.
+The user can get transaction history based on
+Sort their all transactions history
+Based on Amount ("amount")
+Based on Transaction DateTime ("time") using the passed timestamps
+Filter transactions history
+Based on Send or Receive Amount ("send/receive")
+Assumption: Consider single filter & sorted field
+Assumptions & Clarifications
+All userIds passed to methods are Flipkart-registered users. A non-registered userId is treated as invalid.
+Every successful money load or send operation creates transaction records.
+The caller provides a monotonically increasing timestamp on each loadMoney and sendMoney. This passed timestamp is stored in the transaction and used for sorting when sortBy="time".
+If two transactions have the same timestamp, preserve insertion order (stable sort) while sorting by time.
+A sendMoney operation creates two records when successful (both share the same passed timestamp):
+Sender: SEND (debit)
+Receiver: RECEIVE (credit)
+Wallet balance is computed as: sum(credits) - sum(debits). Wallet balance must be fetched using a separate method getBalance.
+Sorting uses exactly one field per call:
+sortBy="time": ascending by passed timestamp
+sortBy="amount": highest to lowest (descending amount)
+Filtering uses exactly one filter per call:
+filterBy="send": only SEND transactions
+filterBy="receive": only RECEIVE transactions
+filterBy="all": LOAD, SEND, and RECEIVE
+Data Encoding
+A transaction is encoded as a single string: time=<timestamp>|type=<LOAD|SEND|RECEIVE>|counterparty=<value>|amount=<a>
+counterparty is:
+For LOAD: the load source (e.g., UPI, CreditCard)
+For SEND: the receiver userId
+For RECEIVE: the sender userId
+getTransactionHistory returns only transaction strings (no balance line).
+Class & Method Signatures
+Constructor
+ FlipkartWallet(List<String> registeredUserIds) 
+Initializes the system with the set of Flipkart-registered users.
+1) Load Money
+ boolean loadMoney(String userId, long amount, String source, long timestamp) 
+ 0 < amount < 10^9
+timestamp > 0
+Returns true if load is successful; otherwise false (invalid user or invalid amount).
+Creates one LOAD (credit) transaction on success with time=timestamp.
+2) Send Money
+ boolean sendMoney(String fromUserId, String toUserId, long amount, long timestamp) 
+ 0 < amount < 10^9
+timestamp > 0
+fromUserId and toUserId must be registered users
+fromUserId must have sufficient balance
+Returns true if send is successful; otherwise false.
+Creates two transactions on success (both with time=timestamp):
+Sender: SEND (debit)
+Receiver: RECEIVE (credit)
+3) Get Balance
+ long getBalance(String userId) 
+Returns current wallet balance for userId considering both credit & debit transactions.
+If userId is invalid (not registered), return -1.
+4) Get Transaction History
+ List<String> getTransactionHistory(String userId, String sortBy, String filterBy) 
+sortBy is one of: "amount", "time"
+filterBy is one of: "send", "receive", "all"
+Output format:
+Returns transaction strings after applying exactly one filter and one sort field.
+For a valid user, it may return an empty list if there are no matching transactions.
+If userId is invalid (not registered), return an empty list.
+Constraints
+1 ≤ registeredUserIds.size()
+amount and timestamp fits in signed 64-bit integer.
+loadMoney and sendMoney with amount <= 0 must fail
+sendMoney must fail if balance is insufficient
+getBalance returns -1 for invalid user
+getTransactionHistory returns an empty list for invalid user
+In-memory only; no external DB or source integrations
+Examples
+Example 1: Load money, send money, fetch balance, and read history (time sort uses passed timestamps)
+FlipkartWallet wallet = new FlipkartWallet(registeredUserIds = List.of("user-1", "user-2"));
+wallet.loadMoney(userId="user-1", amount=500, source="UPI", timestamp=1000)  => true
+wallet.sendMoney(fromUserId="user-1", toUserId="user-2", amount=200, timestamp=1010)  => true
+wallet.sendMoney(fromUserId="user-1", toUserId="user-2", amount=400, timestamp=1020)  => false  (insufficient balance: 500 - 200 = 300)
+wallet.getBalance(userId="user-1")  => 300
+wallet.getBalance(userId="user-2")  => 200
+wallet.getTransactionHistory(userId="user-1", sortBy="time", filterBy="all")  =>   List.of( "time=1000|type=LOAD|counterparty=UPI|amount=500", "time=1010|type=SEND|counterparty=user-2|amount=200" ) 
+wallet.getTransactionHistory(userId="user-2", sortBy="time", filterBy="receive")  =>   List.of( "time=1010|type=RECEIVE|counterparty=user-1|amount=200" ) 
+Example 2: Sort by amount
+wallet.loadMoney(userId="user-1", amount=50, source="CreditCard", timestamp=1030)  => true
+wallet.getBalance(userId="user-1")  => 350
+wallet.getTransactionHistory(userId="user-1", sortBy="amount", filterBy="all")  =>   List.of( "time=1000|type=LOAD|counterparty=UPI|amount=500", "time=1010|type=SEND|counterparty=user-2|amount=200", "time=1030|type=LOAD|counterparty=CreditCard|amount=50" ) 
+Example 3: Filter send/receive with time sort (timestamps drive order)
+wallet.loadMoney(userId="user-1", amount=1000, source="DebitCard", timestamp=2000)  => true
+wallet.sendMoney(fromUserId="user-1", toUserId="user-2", amount=700, timestamp=2010)  => true
+wallet.getBalance(userId="user-1")  => 650
+wallet.getBalance(userId="user-2")  => 900
+wallet.getTransactionHistory(userId="user-1", sortBy="time", filterBy="send")  =>   List.of( "time=1010|type=SEND|counterparty=user-2|amount=200", "time=2010|type=SEND|counterparty=user-2|amount=700" ) 
+wallet.getTransactionHistory(userId="user-2", sortBy="time", filterBy="receive")  =>   List.of( "time=1010|type=RECEIVE|counterparty=user-1|amount=200", "time=2010|type=RECEIVE|counterparty=user-1|amount=700" ) 
