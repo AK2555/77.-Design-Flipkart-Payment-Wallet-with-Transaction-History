@@ -1,0 +1,360 @@
+import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.locks.ReentrantLock;
+
+public class FlipkartWallet {
+
+    private WalletManager walletManager;
+
+    public FlipkartWallet(List<String> registeredUserIds) {
+
+    this.walletManager=new WalletManager(new UserManager());
+        for(String uid: registeredUserIds){
+            walletManager.addUser(uid);
+        }
+    }
+
+    public boolean loadMoney(String userId, long amount, String source, long timestamp) {
+       return walletManager.loadMoney(userId,amount,source,timestamp);
+    }
+
+    public boolean sendMoney(String fromUserId, String toUserId, long amount, long timestamp) {
+        return walletManager.sendMoney(fromUserId,toUserId,amount,timestamp);
+    }
+
+    public long getBalance(String userId) {
+        return walletManager.getBalance(userId);
+    }
+
+    public List<String> getTransactionHistory(String userId, String sortBy, String filterBy) {
+        return walletManager.getTransactionHistory(userId,sortBy,filterBy);
+    }
+}
+
+
+class EncodingUtil {
+    public static String encode(Transaction transaction){
+        return "time="+transaction.getTimestamp()+"|type="+transaction.getType()+"|counterparty="+transaction.getCounterParty()+"|amount="+transaction.getAmount();
+    }
+}
+
+
+class TimeSortingStrategy implements SortingStrategy{
+    @Override
+    public void sort(List<Transaction> transactions) {
+        Collections.sort(transactions,(a,b)-> Long.compare(a.getTimestamp(),b.getTimestamp()));
+    }
+}
+
+
+interface SortingStrategy {
+    void sort(List<Transaction> transactions);
+}
+
+class SendFilterStrategy implements FilterStrategy{
+    @Override
+    public List<Transaction> filter(List<Transaction> transactions) {
+        List<Transaction> res=new ArrayList<>();
+        for(int i=0;i<transactions.size();i++){
+            Transaction transaction=transactions.get(i);
+            if(transaction.getType().equals("SEND")){
+                res.add(transaction);
+            }
+        }
+        return res;
+    }
+}
+
+
+class ReceiveFilterStrategy implements FilterStrategy{
+    @Override
+    public List<Transaction> filter(List<Transaction> transactions) {
+        List<Transaction> res=new ArrayList<>();
+        for(int i=0;i<transactions.size();i++){
+            Transaction transaction=transactions.get(i);
+            if(transaction.getType().equals("RECEIVE")){
+                res.add(transaction);
+            }
+        }
+        return res;
+    }
+}
+
+
+interface FilterStrategy {
+    List<Transaction> filter(List<Transaction> transactions);
+}
+
+
+class AmountSortingStrategy implements SortingStrategy{
+    @Override
+    public void sort(List<Transaction> transactions) {
+        Collections.sort(transactions,(a,b)-> Long.compare(b.getAmount(),a.getAmount()));
+    }
+}
+
+
+class AllFilterStrategy implements FilterStrategy{
+    @Override
+    public List<Transaction> filter(List<Transaction> transactions) {
+        return transactions;
+    }
+}
+
+
+class WalletManager {
+    private UserManager userManager;
+    private Map<String, FilterStrategy> filterStrategyMap;
+    private Map<String, SortingStrategy> sortingStrategyMap;
+    public WalletManager(UserManager userManager){
+        this.userManager=userManager;
+        this.filterStrategyMap=new HashMap<>();
+        filterStrategyMap.put("send",new SendFilterStrategy());
+        filterStrategyMap.put("receive",new ReceiveFilterStrategy());
+        filterStrategyMap.put("all",new AllFilterStrategy());
+
+        this.sortingStrategyMap=new HashMap<>();
+        sortingStrategyMap.put("amount",new AmountSortingStrategy());
+        sortingStrategyMap.put("time",new TimeSortingStrategy());
+    }
+
+    public void addUser(String userId){
+        Wallet wallet=new Wallet();
+        if(userManager.isUserPresent(userId)){
+            return;
+        }
+        userManager.addUser(userId,wallet);
+    }
+
+    public boolean loadMoney(String userId, long amount, String source, long timestamp){
+        if(!userManager.isUserPresent(userId) || amount<=0 || timestamp<=0){
+            return false;
+        }
+
+        User user=userManager.getUser(userId);
+
+        Transaction transaction=new Transaction(amount,timestamp,source,"LOAD");
+        Wallet wallet=user.getWallet();
+
+        try{
+
+            wallet.getLock().lock();
+
+            wallet.credit(amount);
+            wallet.addTransaction(transaction);
+
+        } finally {
+            wallet.getLock().unlock();
+        }
+
+        return true;
+    }
+
+    public boolean sendMoney(String fromUserId, String toUserId, long amount, long timestamp) {
+        if(!userManager.isUserPresent(fromUserId) || !userManager.isUserPresent(toUserId) || amount<=0 || timestamp<=0){
+            return false;
+        }
+
+        User sender=userManager.getUser(fromUserId);
+        Wallet fromWallet=sender.getWallet();
+        User receiver=userManager.getUser(toUserId);
+        Wallet toWallet=receiver.getWallet();
+
+        Wallet firstLock = fromUserId.compareTo(toUserId)<0 ? fromWallet:toWallet;
+        Wallet secondLock = fromUserId.compareTo(toUserId)<0 ? toWallet : fromWallet;
+
+        firstLock.getLock().lock();
+        secondLock.getLock().lock();
+
+        try{
+
+            if(fromWallet.getBalance()<amount){
+                return false;
+            }
+
+            fromWallet.debit(amount);
+            toWallet.credit(amount);
+
+            Transaction txn1=new Transaction(amount,timestamp,toUserId,"SEND");
+            Transaction txn2=new Transaction(amount,timestamp,fromUserId,"RECEIVE");
+
+            fromWallet.addTransaction(txn1);
+            toWallet.addTransaction(txn2);
+
+            return true;
+        } finally {
+           secondLock.getLock().unlock();
+           firstLock.getLock().unlock();
+        }
+    }
+
+    public long getBalance(String userId) {
+        if(!userManager.isUserPresent(userId)){
+            return -1;
+        }
+        Wallet wallet= userManager.getUser(userId).getWallet();
+        wallet.getLock().lock();
+        try{
+            return wallet.getBalance();
+        } finally {
+           wallet.getLock().unlock();
+        }
+    }
+
+    public List<String> getTransactionHistory(String userId, String sortBy, String filterBy) {
+        if(!userManager.isUserPresent(userId)){
+            return new ArrayList<>();
+        }
+        User user=userManager.getUser(userId);
+        Wallet wallet=user.getWallet();
+        List<Transaction> txns=wallet.getTransactions();
+
+        List<Transaction> filterTxn= filterStrategyMap.get(filterBy).filter(txns);
+
+        sortingStrategyMap.get(sortBy).sort(filterTxn);
+
+        List<String> res=new ArrayList<>();
+
+        for(Transaction transaction: filterTxn){
+            res.add(EncodingUtil.encode(transaction));
+        }
+
+        return res;
+    }
+
+
+}
+
+
+class UserManager {
+    private Map<String, User> userMap;
+
+    public UserManager(){
+        this.userMap=new ConcurrentHashMap<>();
+    }
+
+    public boolean isUserPresent(String userId){
+        return userMap.containsKey(userId);
+    }
+
+    public void addUser(String userId,Wallet wallet){
+//        User user=new User(userId,wallet);
+//        userMap.put(userId,user);
+        userMap.putIfAbsent(userId,new User(userId,wallet));
+    }
+
+    public User getUser(String userId){
+        return  userMap.get(userId);
+    }
+}
+
+
+class Wallet {
+    private long balance;
+    private List<Transaction> transactions;
+    private ReentrantLock lock;
+
+    public Wallet(){
+        this.balance=0L;
+        this.transactions=new ArrayList<>();
+        this.lock=new ReentrantLock();
+    }
+
+    public ReentrantLock getLock(){
+        return this.lock;
+    }
+
+    public void credit(long amount){
+        balance+=amount;
+    }
+
+    public void debit(long amount){
+        balance-=amount;
+    }
+
+    public void setBalance(long balance){
+        this.balance=balance;
+    }
+
+    public long getBalance(){
+        return balance;
+    }
+
+    public void addTransaction(Transaction transaction){
+        transactions.add(transaction);
+    }
+
+    public List<Transaction> getTransactions(){
+        return new ArrayList<>(transactions);
+    }
+
+}
+
+
+class User {
+    private final String userId;
+    private Wallet wallet;
+
+    public User(String userId, Wallet wallet) {
+        this.userId = userId;
+        this.wallet = wallet;
+    }
+
+    public String getUserId() {
+        return userId;
+    }
+
+    public Wallet getWallet() {
+        return wallet;
+    }
+
+    public void setWallet(Wallet wallet) {
+        this.wallet = wallet;
+    }
+}
+
+class Transaction {
+    private long amount;
+    private long timestamp;
+    private String counterParty;
+    private String type;
+
+    public Transaction(long amount, long timestamp, String counterParty, String type) {
+        this.amount = amount;
+        this.timestamp = timestamp;
+        this.counterParty = counterParty;
+        this.type = type;
+    }
+
+    public long getAmount() {
+        return amount;
+    }
+
+    public void setAmount(long amount) {
+        this.amount = amount;
+    }
+
+    public long getTimestamp() {
+        return timestamp;
+    }
+
+    public void setTimestamp(long timestamp) {
+        this.timestamp = timestamp;
+    }
+
+    public String getCounterParty() {
+        return counterParty;
+    }
+
+    public void setCounterParty(String counterParty) {
+        this.counterParty = counterParty;
+    }
+
+    public String getType() {
+        return type;
+    }
+
+    public void setType(String type) {
+        this.type = type;
+    }
+}
